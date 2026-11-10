@@ -14,6 +14,16 @@ enum class Platform(val label: String) {
     X("X"),
     TIKTOK("TikTok"),
     XIAOHONGSHU("小红书"),
+    WEIBO("微博"),
+    FACEBOOK("Facebook"),
+    TWITCH("Twitch"),
+    VIMEO("Vimeo"),
+    REDDIT("Reddit"),
+    DAILYMOTION("Dailymotion"),
+    THREADS("Threads"),
+    PINTEREST("Pinterest"),
+    TUMBLR("Tumblr"),
+    LINKEDIN("LinkedIn"),
     OTHER("其他")
 }
 
@@ -29,6 +39,16 @@ fun detectPlatform(url: String): Platform {
         "twitter.com" in lower || "x.com" in lower -> Platform.X
         "tiktok.com" in lower -> Platform.TIKTOK
         "xiaohongshu.com" in lower || "xhslink.com" in lower -> Platform.XIAOHONGSHU
+        "weibo.com" in lower || "weibo.cn" in lower -> Platform.WEIBO
+        "facebook.com" in lower || "fb.watch" in lower || "fb.com" in lower -> Platform.FACEBOOK
+        "twitch.tv" in lower -> Platform.TWITCH
+        "vimeo.com" in lower -> Platform.VIMEO
+        "reddit.com" in lower || "redd.it" in lower -> Platform.REDDIT
+        "dailymotion.com" in lower || "dai.ly" in lower -> Platform.DAILYMOTION
+        "threads.net" in lower || "threads.com" in lower -> Platform.THREADS
+        "pinterest.com" in lower || "pin.it" in lower -> Platform.PINTEREST
+        "tumblr.com" in lower -> Platform.TUMBLR
+        "linkedin.com" in lower -> Platform.LINKEDIN
         else -> Platform.OTHER
     }
 }

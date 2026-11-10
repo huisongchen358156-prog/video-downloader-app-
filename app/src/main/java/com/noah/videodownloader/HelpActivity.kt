@@ -16,7 +16,7 @@ class HelpActivity : Activity() {
     companion object {
         const val HELP_TEXT = """
 使用方法
-1. 在抖音、快手、哔哩哔哩、YouTube、Instagram、X、TikTok、小红书里找到视频，点“分享”→“复制链接”。
+1. 在抖音、快手、哔哩哔哩、YouTube、Instagram、X、TikTok、小红书、微博、Facebook、Twitch、Vimeo、Reddit、Dailymotion、Threads、Pinterest、Tumblr、LinkedIn 里找到视频，点“分享”→“复制链接”。
 2. 回到本 App：链接会自动填入（或点“粘贴”），再点“解析”。
 3. 解析成功后选一个清晰度，点“下载”。视频保存在手机“下载/VideoDownloader/”文件夹里。
 4. 也可以在别的 App 里直接点“分享”→选“视频下载助手”，链接会自动带过来。
