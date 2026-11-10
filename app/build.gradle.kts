@@ -14,6 +14,12 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0.0"
+
+        // Chaquopy 强制要求：不配 ndk.abiFilters 的话 Gradle 配置阶段直接报错
+        // （Build APK 运行 #9 就是栽在这里）。只留 ARM 两个架构，覆盖真机。
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
     }
 
     buildTypes {
