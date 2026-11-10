@@ -1,6 +1,6 @@
 # 视频下载助手 V1
 
-复制抖音、快手、哔哩哔哩、YouTube、Instagram、X、TikTok、小红书的视频分享链接，粘贴进来，解析后选清晰度下载无水印 / 高清视频。
+复制抖音、快手、哔哩哔哩、YouTube、Instagram、X、TikTok、小红书、微博、Facebook、Twitch、Vimeo、Reddit、Dailymotion、Threads、Pinterest、Tumblr、LinkedIn 的视频分享链接，粘贴进来，解析后选清晰度下载无水印 / 高清视频。
 
 技术路线：Kotlin + Chaquopy + yt-dlp（即 Grok 对话里推荐的“方案一”）。本项目是全新编写的源码，没有使用、复制或反编译原“视频下载鸟”的品牌、代码或安装包。
 
@@ -10,7 +10,7 @@
 
 ## V1 功能
 
-- **粘贴链接解析**：输入框 + “粘贴”按钮；打开 App 自动检测剪贴板里的链接并填入；自动识别平台（抖音 / 快手 / 哔哩哔哩 / YouTube / Instagram / X / TikTok / 小红书 / 其他）。
+- **粘贴链接解析**：输入框 + “粘贴”按钮；打开 App 自动检测剪贴板里的链接并填入；自动识别平台（抖音 / 快手 / 哔哩哔哩 / YouTube / Instagram / X / TikTok / 小红书 / 微博 / Facebook / Twitch / Vimeo / Reddit / Dailymotion / Threads / Pinterest / Tumblr / LinkedIn / 其他）。
 - **解析结果**：显示标题、作者、时长、封面；列出可选清晰度（合并格式，如 1080p / 720p / 480p，另有“仅音频”），选一个再下载。
 - **下载**：前台服务 + 通知栏进度条与百分比；下载失败可点“重试”；保存到手机 **下载 / VideoDownloader /** 文件夹，文件名取自视频标题（已清洗非法字符）。
 - **历史记录**：本地保存（App 内部 `history.json`），点一条打开播放，长按可分享或删除记录。
