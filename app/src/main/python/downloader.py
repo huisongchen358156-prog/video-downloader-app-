@@ -51,31 +51,29 @@ def _fail(message):
     )
 
 
-def extract_info(url):
-    """解析链接，返回标题/作者/时长/封面/可选格式。"""
-    opts = {
-        "quiet": True,
-        "noplaylist": True,
-        "skip_download": True,
-        "no_warnings": True,
-        "socket_timeout": 30,
-    }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as e:  # noqa: BLE001 - 任何解析失败都转成错误 JSON
-        return _fail(str(e))
+def _pick_formats(raw_formats):
+    """从 yt-dlp 返回的原始格式列表里挑出 V1 能直接下载的那些。
 
-    if not info or info.get("entries"):
-        # 合集/频道页：V1 只支持单个视频链接。
-        return _fail("Unsupported URL: playlist or channel page")
+    返回 (formats, max_combined_height, has_higher_separate)：
+    - formats：合并格式（视频+音频一体，同一清晰度只留一个最好的）+
+      仅音频（只留一个文件最大的，通常码率最高），按清晰度从高到低排，音频放最后。
+    - has_higher_separate：是否存在比最高合并清晰度更高的纯视频流
+      （那种需要 ffmpeg 合并，V1 下不了，只用来提示）。
 
+    注意两个之前写错的点（2026-11-10 代码审阅发现）：
+    1. 仅音频以前留的是排序后第一个，也就是文件最小的（码率最低），
+       现在改成显式比较，只留文件最大的。
+    2. has_higher_separate 以前在循环里边算边比，纯视频流可能排在同清晰度
+       的合并格式前面，导致明明有合并 1080p 也误报“有更高清晰度”；
+       现在先记纯视频流的最高清晰度，循环结束后再跟最终的合并最高值比。
+    """
     formats = []
     seen_heights = set()
     max_combined_height = 0
-    has_higher_separate = False
+    video_only_max_height = 0
+    best_audio = None
+    best_audio_key = -1
 
-    raw_formats = info.get("formats") or []
     # 先按“清晰度 + 文件大小”排个序，方便后面按清晰度去重时优先留 mp4、大文件。
     def _sort_key(f):
         return (
@@ -109,23 +107,55 @@ def extract_info(url):
                 "is_combined": True,
             })
         elif is_audio_only:
-            # 仅音频只留一个最好的。
-            if not any(x["is_audio_only"] for x in formats):
-                formats.append({
+            # 仅音频只留一个最好的：同一视频各音频格式时长相同，
+            # 文件越大码率越高，显式比大小，不依赖排序顺序。
+            key = f.get("filesize") or f.get("filesize_approx") or 0
+            if key > best_audio_key:
+                best_audio_key = key
+                best_audio = {
                     "format_id": str(f.get("format_id")),
                     "height": 0,
                     "ext": f.get("ext") or "m4a",
                     "filesize": f.get("filesize") or f.get("filesize_approx"),
                     "is_audio_only": True,
                     "is_combined": False,
-                })
+                }
         else:
-            # 纯视频流：没有音频，需要 ffmpeg 合并，V1 不提供，只记录“有更高清晰度”。
-            if height > max_combined_height:
-                has_higher_separate = True
+            # 纯视频流：没有音频，需要 ffmpeg 合并，V1 不提供；
+            # 只记最高清晰度，循环结束后再跟合并最高值比较。
+            if height > video_only_max_height:
+                video_only_max_height = height
+
+    if best_audio is not None:
+        formats.append(best_audio)
 
     # 清晰度从高到低，音频放最后。
     formats.sort(key=lambda x: (x["is_audio_only"], -(x["height"] or 0)))
+    has_higher_separate = video_only_max_height > max_combined_height
+    return formats, max_combined_height, has_higher_separate
+
+
+def extract_info(url):
+    """解析链接，返回标题/作者/时长/封面/可选格式。"""
+    opts = {
+        "quiet": True,
+        "noplaylist": True,
+        "skip_download": True,
+        "no_warnings": True,
+        "socket_timeout": 30,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:  # noqa: BLE001 - 任何解析失败都转成错误 JSON
+        return _fail(str(e))
+
+    if not info or info.get("entries"):
+        # 合集/频道页：V1 只支持单个视频链接。
+        return _fail("Unsupported URL: playlist or channel page")
+
+    raw_formats = info.get("formats") or []
+    formats, max_combined_height, has_higher_separate = _pick_formats(raw_formats)
 
     return _ok({
         "title": info.get("title") or "未命名视频",
