@@ -28,6 +28,8 @@ class DownloadService : Service() {
         const val ACTION_PROGRESS = "com.noah.videodownloader.DOWNLOAD_PROGRESS"
         const val ACTION_FINISHED = "com.noah.videodownloader.DOWNLOAD_FINISHED"
         const val ACTION_FAILED = "com.noah.videodownloader.DOWNLOAD_FAILED"
+        // 已有下载在跑时拒绝新的下载请求（不是下载失败，界面只提示、不动进度）。
+        const val ACTION_BUSY = "com.noah.videodownloader.DOWNLOAD_BUSY"
         const val EXTRA_PERCENT = "percent"
         const val EXTRA_TITLE = "title"
         const val EXTRA_ERROR = "error"
@@ -94,7 +96,13 @@ class DownloadService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null || running) return START_NOT_STICKY
+        if (intent == null) return START_NOT_STICKY
+        if (running) {
+            // V1 一次只跑一个下载：新请求直接拒掉并明确告诉界面，
+            // 以前这里是悄悄 return，界面会一直卡在“开始下载…”。
+            sendBroadcast(Intent(ACTION_BUSY))
+            return START_NOT_STICKY
+        }
         val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
         val formatId = intent.getStringExtra(EXTRA_FORMAT_ID) ?: return START_NOT_STICKY
         val fileName = intent.getStringExtra(EXTRA_FILE_NAME) ?: "video"
@@ -195,7 +203,7 @@ class DownloadService : Service() {
         )
 
         val openIntent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(targetUri, mimeOf(tmpFile.name))
+            setDataAndType(targetUri, mimeOfFile(tmpFile.name))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         val pending = PendingIntent.getActivity(
@@ -229,26 +237,13 @@ class DownloadService : Service() {
         }
     }
 
-    private fun mimeOf(name: String): String {
-        return when (name.substringAfterLast('.', "").lowercase()) {
-            "mp4" -> "video/mp4"
-            "webm" -> "video/webm"
-            "mkv" -> "video/x-matroska"
-            "mov" -> "video/quicktime"
-            "m4a" -> "audio/mp4"
-            "mp3" -> "audio/mpeg"
-            "opus" -> "audio/opus"
-            else -> "video/*"
-        }
-    }
-
     /**
      * 把临时文件复制进公共目录 Download/VideoDownloader/。
      * API 29+ 用 MediaStore（无需存储权限）；API 26–28 用公共目录直写（需 WRITE_EXTERNAL_STORAGE）。
      */
     private fun copyToPublicDownloads(tmpFile: File, fileName: String): Uri? {
         val displayName = tmpFile.name
-        val mime = mimeOf(displayName)
+        val mime = mimeOfFile(displayName)
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {

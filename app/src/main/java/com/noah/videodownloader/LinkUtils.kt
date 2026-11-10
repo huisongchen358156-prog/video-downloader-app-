@@ -27,16 +27,26 @@ enum class Platform(val label: String) {
     OTHER("其他")
 }
 
+/** 从链接里取 host（小写），用于需要精确匹配域名的平台判断。 */
+private fun hostOf(url: String): String {
+    val after = url.substringAfter("://", "")
+    if (after.isEmpty()) return ""
+    return after.substringBefore('/').substringBefore('?').substringBefore('#')
+}
+
 /** 从链接域名判断平台。 */
 fun detectPlatform(url: String): Platform {
     val lower = url.lowercase()
+    val host = hostOf(lower)
     return when {
         "douyin.com" in lower -> Platform.DOUYIN
         "kuaishou.com" in lower || "kwai.com" in lower || "v.kuaishou" in lower -> Platform.KUAISHOU
         "bilibili.com" in lower || "b23.tv" in lower -> Platform.BILIBILI
         "youtube.com" in lower || "youtu.be" in lower -> Platform.YOUTUBE
         "instagram.com" in lower -> Platform.INSTAGRAM
-        "twitter.com" in lower || "x.com" in lower -> Platform.X
+        // 注意：不能用 "x.com" in lower 这种子串匹配，box.com 这类域名里也含
+        // "x.com"，会被误认成 X；改成按 host 精确匹配。
+        host == "x.com" || host.endsWith(".x.com") || "twitter.com" in lower -> Platform.X
         "tiktok.com" in lower -> Platform.TIKTOK
         "xiaohongshu.com" in lower || "xhslink.com" in lower -> Platform.XIAOHONGSHU
         "weibo.com" in lower || "weibo.cn" in lower -> Platform.WEIBO
@@ -53,14 +63,28 @@ fun detectPlatform(url: String): Platform {
     }
 }
 
+/** 按文件名后缀取 MIME 类型（打开/分享历史记录时用；音频别再按 video/* 打开）。 */
+fun mimeOfFile(name: String): String {
+    return when (name.substringAfterLast('.', "").lowercase()) {
+        "mp4" -> "video/mp4"
+        "webm" -> "video/webm"
+        "mkv" -> "video/x-matroska"
+        "mov" -> "video/quicktime"
+        "m4a" -> "audio/mp4"
+        "mp3" -> "audio/mpeg"
+        "opus" -> "audio/opus"
+        else -> "video/*"
+    }
+}
+
 private val URL_REGEX = Regex("https?://[^\\s\"'<>\\[\\]]+")
 
 /** 从一段分享文本里抠出第一条链接（微信/QQ/抖音分享文案常带中文说明）。 */
 fun extractUrl(text: String?): String? {
     if (text.isNullOrBlank()) return null
     val match = URL_REGEX.find(text) ?: return null
-    // 去掉末尾常被粘上的标点/括号/中文句号。
-    return match.value.trimEnd(')', ']', '}', '。', '，', '；', '、', '.', ',', ';', '!', '?', '！', '？')
+    // 去掉末尾常被粘上的标点/括号/中文句号（含全角括号，微信/QQ 分享文案常用）。
+    return match.value.trimEnd(')', ']', '}', '。', '，', '；', '、', '.', ',', ';', '!', '?', '！', '？', '）', '】', '」', '》')
 }
 
 /** 把视频标题洗成安全文件名：去非法字符、去首尾空格和点、限长。 */

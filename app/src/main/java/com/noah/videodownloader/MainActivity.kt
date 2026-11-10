@@ -51,6 +51,7 @@ class MainActivity : Activity() {
     private var currentInfo: VideoInfo? = null
     private var currentUrl: String = ""
     private var selectedFormat = -1
+    private var isDownloading = false
 
     // 供“重试”使用：上一次下载的参数。
     private var lastDownloadUrl = ""
@@ -71,6 +72,7 @@ class MainActivity : Activity() {
                     progressText.text = "下载中 $percent%"
                 }
                 DownloadService.ACTION_FINISHED -> {
+                    isDownloading = false
                     progressBar.visibility = View.GONE
                     progressText.text = "下载完成"
                     statusText.text = "已保存到 下载/VideoDownloader/：${intent.getStringExtra(DownloadService.EXTRA_TITLE)}"
@@ -80,6 +82,7 @@ class MainActivity : Activity() {
                     Toast.makeText(this@MainActivity, "下载完成", Toast.LENGTH_SHORT).show()
                 }
                 DownloadService.ACTION_FAILED -> {
+                    isDownloading = false
                     progressBar.visibility = View.GONE
                     val msg = intent.getStringExtra(DownloadService.EXTRA_ERROR) ?: "下载失败"
                     progressText.text = "下载失败"
@@ -87,6 +90,12 @@ class MainActivity : Activity() {
                     retryButton.visibility = View.VISIBLE
                     downloadButton.isEnabled = true
                     Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+                }
+                DownloadService.ACTION_BUSY -> {
+                    // 已有下载在跑，本次请求被服务拒绝（不是当前下载失败）：
+                    // 只提示，不动进度条和下载按钮的状态，等当前下载跑完再说。
+                    Toast.makeText(this@MainActivity, "已有下载进行中，请等它完成", Toast.LENGTH_SHORT).show()
+                    statusText.text = "已有下载进行中，请等当前下载完成"
                 }
             }
         }
@@ -119,7 +128,8 @@ class MainActivity : Activity() {
         formatList.choiceMode = ListView.CHOICE_MODE_SINGLE
         formatList.setOnItemClickListener { _, _, position, _ ->
             selectedFormat = position
-            downloadButton.isEnabled = true
+            // 下载进行中不开放第二个下载（服务侧也会拒掉，这里先拦住不让点）。
+            downloadButton.isEnabled = !isDownloading
         }
 
         findViewById<Button>(R.id.paste_button).setOnClickListener { pasteFromClipboard() }
@@ -142,6 +152,7 @@ class MainActivity : Activity() {
             addAction(DownloadService.ACTION_PROGRESS)
             addAction(DownloadService.ACTION_FINISHED)
             addAction(DownloadService.ACTION_FAILED)
+            addAction(DownloadService.ACTION_BUSY)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(downloadReceiver, downloadFilter, Context.RECEIVER_NOT_EXPORTED)
@@ -302,6 +313,7 @@ class MainActivity : Activity() {
         lastPlatform = detectPlatform(currentUrl).label
 
         ensureNotificationPermission()
+        isDownloading = true
         downloadButton.isEnabled = false
         retryButton.visibility = View.GONE
         progressBar.visibility = View.VISIBLE
@@ -314,6 +326,7 @@ class MainActivity : Activity() {
     private fun retryDownload() {
         if (lastDownloadUrl.isBlank() || lastFormatId.isBlank()) return
         ensureNotificationPermission()
+        isDownloading = true
         retryButton.visibility = View.GONE
         progressBar.visibility = View.VISIBLE
         progressBar.progress = 0
@@ -352,7 +365,7 @@ class MainActivity : Activity() {
         try {
             val uri = Uri.parse(item.uri)
             val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "video/*")
+                setDataAndType(uri, mimeOfFile(item.fileName))
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
             startActivity(intent)
@@ -383,7 +396,7 @@ class MainActivity : Activity() {
         try {
             val uri = Uri.parse(item.uri)
             val intent = Intent(Intent.ACTION_SEND).apply {
-                type = "video/*"
+                type = mimeOfFile(item.fileName)
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
