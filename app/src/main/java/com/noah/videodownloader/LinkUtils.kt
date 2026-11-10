@@ -63,7 +63,7 @@ fun detectPlatform(url: String): Platform {
     }
 }
 
-/** 按文件名后缀取 MIME 类型（打开/分享历史记录时用；音频别再按 video/* 打开）。 */
+/** 按文件名后缀取 MIME 类型（打开/分享历史记录时用；音频别再按视频类型打开）。 */
 fun mimeOfFile(name: String): String {
     return when (name.substringAfterLast('.', "").lowercase()) {
         "mp4" -> "video/mp4"
