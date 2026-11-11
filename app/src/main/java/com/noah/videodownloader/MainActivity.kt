@@ -137,6 +137,7 @@ class MainActivity : Activity() {
 
         findViewById<Button>(R.id.paste_button).setOnClickListener { pasteFromClipboard() }
         findViewById<Button>(R.id.parse_button).setOnClickListener { parseLink() }
+        findViewById<Button>(R.id.browser_button).setOnClickListener { openInBrowser() }
 
         // 直连开关：默认开着。开着时 App 的流量绕过 VPN 走手机本身的网络，
         // 这样开 VPN 也能下国内视频；关掉就恢复走 VPN。
@@ -249,6 +250,19 @@ class MainActivity : Activity() {
         updatePlatformLabel(url)
     }
 
+    /** 浏览器模式：在内置浏览器里打开链接、播放视频，嗅探到视频文件后下载，不用登录。 */
+    private fun openInBrowser() {
+        val url = extractUrl(inputLink.text.toString())
+        if (url == null) {
+            Toast.makeText(this, "请先粘贴一个视频链接", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val intent = Intent(this, BrowserActivity::class.java).apply {
+            putExtra(BrowserActivity.EXTRA_URL, url)
+        }
+        startActivity(intent)
+    }
+
     private fun updatePlatformLabel(url: String) {
         val platform = detectPlatform(url)
         platformLabel.text = "平台：${platform.label}"
@@ -289,7 +303,12 @@ class MainActivity : Activity() {
                 when (result) {
                     is ParseResult.Success -> showVideoInfo(result.info)
                     is ParseResult.Failure -> {
-                        statusText.text = friendlyError(result.code, result.raw)
+                        val hint = if (result.code == "login_required") {
+                            "，可以试试下面的“浏览器打开”"
+                        } else {
+                            ""
+                        }
+                        statusText.text = friendlyError(result.code, result.raw) + hint
                     }
                 }
             }
