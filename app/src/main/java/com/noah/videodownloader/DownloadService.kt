@@ -120,6 +120,11 @@ class DownloadService : Service() {
     }
 
     private fun runDownload(url: String, formatId: String, fileName: String, platform: String) {
+        // 直连开着时，下载线程里也确保绑到直连网络（解析时绑过的话这里直接返回）。
+        if (DirectNetwork.isEnabled(this)) {
+            DirectNetwork.ensureBound(applicationContext)
+        }
+
         val tmpDir = File(cacheDir, "dl_tmp").apply { mkdirs() }
         val progressFile = File(cacheDir, "dl_progress.json")
         if (progressFile.exists()) progressFile.delete()

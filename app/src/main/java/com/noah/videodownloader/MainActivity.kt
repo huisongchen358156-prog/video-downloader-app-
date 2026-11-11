@@ -20,6 +20,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import com.chaquo.python.Python
@@ -52,6 +53,8 @@ class MainActivity : Activity() {
     private var currentUrl: String = ""
     private var selectedFormat = -1
     private var isDownloading = false
+    // 直连不可用的提示一个会话只弹一次，免得每次解析都打扰。
+    private var directHintShown = false
 
     // 供“重试”使用：上一次下载的参数。
     private var lastDownloadUrl = ""
@@ -134,6 +137,24 @@ class MainActivity : Activity() {
 
         findViewById<Button>(R.id.paste_button).setOnClickListener { pasteFromClipboard() }
         findViewById<Button>(R.id.parse_button).setOnClickListener { parseLink() }
+
+        // 直连开关：默认开着。开着时 App 的流量绕过 VPN 走手机本身的网络，
+        // 这样开 VPN 也能下国内视频；关掉就恢复走 VPN。
+        val directSwitch = findViewById<Switch>(R.id.direct_switch)
+        directSwitch.isChecked = DirectNetwork.isEnabled(this)
+        directSwitch.setOnCheckedChangeListener { _, isChecked ->
+            DirectNetwork.setEnabled(this, isChecked)
+            if (isChecked) {
+                Thread { DirectNetwork.ensureBound(applicationContext) }.start()
+                Toast.makeText(this, "已开启直连下载", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "已关闭直连下载，改走 VPN", Toast.LENGTH_SHORT).show()
+            }
+        }
+        // 打开 App 时如果开关开着，先在后台把直连绑好，解析和下载直接就能用。
+        if (directSwitch.isChecked) {
+            Thread { DirectNetwork.ensureBound(applicationContext) }.start()
+        }
         downloadButton.setOnClickListener { startDownload() }
         retryButton.setOnClickListener { retryDownload() }
         findViewById<Button>(R.id.help_button).setOnClickListener {
@@ -248,9 +269,23 @@ class MainActivity : Activity() {
         retryButton.visibility = View.GONE
 
         Thread {
+            // 直连开着时，先确保已绑到直连网络再解析；绑不上就照常用 VPN 解析，
+            // 只是国内视频可能仍会要求登录（提示一次）。
+            var directOk = true
+            if (DirectNetwork.isEnabled(this@MainActivity)) {
+                directOk = DirectNetwork.ensureBound(applicationContext)
+            }
             val result = YtDlpBridge.extractInfo(url)
             runOnUiThread {
                 parseButton.isEnabled = true
+                if (!directOk && !directHintShown) {
+                    directHintShown = true
+                    Toast.makeText(
+                        this,
+                        "直连不可用，仍走 VPN：国内视频可能需要登录（见使用说明）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 when (result) {
                     is ParseResult.Success -> showVideoInfo(result.info)
                     is ParseResult.Failure -> {
