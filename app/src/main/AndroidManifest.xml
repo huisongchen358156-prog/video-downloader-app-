@@ -3,6 +3,8 @@
 
     <!-- 联网：yt-dlp 解析与下载都需要 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 直连网络（绕过 VPN）需要查询当前网络状态 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Android 13+：下载完成通知 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 前台服务：下载进行中常驻通知 -->
