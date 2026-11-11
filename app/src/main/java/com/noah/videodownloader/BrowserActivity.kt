@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.view.View
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -77,11 +78,71 @@ class BrowserActivity : Activity() {
                 }
                 return null
             }
+
+            // 抖音分享页会跳 snssdk1128://aweme/detail/{id} 这种“在 App 里打开”的链接，
+            // WebView 打不开这种 scheme，页面会直接死掉（net::ERR_UNKNOWN_URL_SCHEME），
+            // 视频还没嗅到就没了。拦住它：带视频 id 的换成网页版打开，其他的直接吞掉。
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                val url = request?.url?.toString() ?: return false
+                val webUrl = appLinkToWebUrl(url)
+                if (webUrl != null) {
+                    view?.loadUrl(webUrl)
+                    return true
+                }
+                val scheme = request.url?.scheme?.lowercase()
+                if (scheme != "http" && scheme != "https") return true
+                return false
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
+                val u = url ?: return false
+                val webUrl = appLinkToWebUrl(u)
+                if (webUrl != null) {
+                    view?.loadUrl(webUrl)
+                    return true
+                }
+                val scheme = try {
+                    URL(u).protocol.lowercase()
+                } catch (e: Exception) {
+                    ""
+                }
+                if (scheme != "http" && scheme != "https") return true
+                return false
+            }
+
+            // 兜底：万一有跳转没拦住、已经报了不支持的 scheme，
+            // 是抖音 App 链接就换成网页版重载一次。
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                if (request?.isForMainFrame != true) return
+                if (error?.errorCode != ERROR_UNSUPPORTED_SCHEME) return
+                val url = request.url?.toString() ?: return
+                val webUrl = appLinkToWebUrl(url) ?: return
+                view?.loadUrl(webUrl)
+            }
         }
         downloadButton.setOnClickListener { showDetectedDialog() }
         findViewById<Button>(R.id.browser_close_button).setOnClickListener { finish() }
 
-        webView.loadUrl(pageUrl)
+        // 粘贴的链接本身也可能是 App 打开链接，先换成网页版再加载。
+        webView.loadUrl(appLinkToWebUrl(pageUrl) ?: pageUrl)
+    }
+
+    // 把抖音 App 的打开链接换成网页版：
+    // snssdk1128://aweme/detail/769121888333142479?... -> https://www.iesdouyin.com/share/video/769121888333142479/
+    // 不是 App 链接（http/https 或其他）返回 null。
+    private fun appLinkToWebUrl(url: String): String? {
+        val lower = url.lowercase()
+        if (lower.startsWith("http://") || lower.startsWith("https://")) return null
+        val match = Regex("aweme/detail/(\\d+)").find(url) ?: return null
+        return "https://www.iesdouyin.com/share/video/${match.groupValues[1]}/"
     }
 
     // 判断一个请求地址是不是视频文件：带视频后缀，或抖音播放地址。
