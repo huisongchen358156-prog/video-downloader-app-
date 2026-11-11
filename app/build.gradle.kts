@@ -12,8 +12,8 @@ android {
         applicationId = "com.noah.videodownloader"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         // Chaquopy 强制要求：不配 ndk.abiFilters 的话 Gradle 配置阶段直接报错
         // （Build APK 运行 #9 就是栽在这里）。只留 ARM 两个架构，覆盖真机。
