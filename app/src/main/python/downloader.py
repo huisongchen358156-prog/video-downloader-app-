@@ -173,6 +173,57 @@ def _download_douyin_direct(url, outdir, filename_base, progress_file):
     return _ok({"path": target, "size": os.path.getsize(target)})
 
 
+def _download_direct_url(url, outdir, filename_base, progress_file):
+    """浏览器模式嗅探到的直链下载：直接分段下载给定的媒体地址。
+
+    抖音的地址如带 playwm（水印版）就换成 play（无水印版），与直连解析一致；
+    抖音 CDN 有时会验 Referer，这里按地址归属带上。
+    """
+    safe_base = re.sub(r'[\\/:*?"<>|]', "_", filename_base or "video").strip(" .") or "video"
+    media_url = url.replace("playwm", "play") if "playwm" in (url or "") else url
+    ext = ".mp4"
+    lower = (media_url or "").lower()
+    for candidate in (".mp4", ".webm", ".mov", ".mkv", ".m4a", ".mp3"):
+        if candidate in lower:
+            ext = candidate
+            break
+    target = os.path.join(outdir, safe_base + ext)
+    headers = {"User-Agent": DOUYIN_MOBILE_UA}
+    if any(h in lower for h in ("douyin", "snssdk.com", "douyinvod.com")):
+        headers["Referer"] = "https://www.iesdouyin.com/"
+    try:
+        req = urllib.request.Request(media_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as fh:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                done += len(chunk)
+                try:
+                    payload = {"status": "downloading",
+                               "percent": int(done * 100 / total) if total else 0,
+                               "downloaded": done, "total": total}
+                    with open(progress_file, "w", encoding="utf-8") as pf:
+                        json.dump(payload, pf)
+                except Exception:
+                    pass
+        with open(progress_file, "w", encoding="utf-8") as pf:
+            json.dump({"status": "finished", "percent": 100}, pf)
+    except Exception as e:  # noqa: BLE001
+        try:
+            if os.path.exists(target):
+                os.remove(target)
+        except Exception:
+            pass
+        return _fail(str(e))
+    if not os.path.exists(target) or os.path.getsize(target) == 0:
+        return _fail("download finished but file not found")
+    return _ok({"path": target, "size": os.path.getsize(target)})
+
+
 def _error_code(message):
     m = (message or "").lower()
     if "login required" in m or "log in" in m or "cookies" in m or "sign in" in m:
@@ -331,6 +382,10 @@ def download(url, format_id, outdir, filename_base, progress_file):
     # 抖音免登录直连格式：不走 yt-dlp，直接下无水印直链。
     if format_id == DOUYIN_DIRECT_FORMAT_ID:
         return _download_douyin_direct(url, outdir, filename_base, progress_file)
+
+    # 浏览器模式嗅探到的直链：url 本身就是媒体地址，直接下载。
+    if format_id == "direct_url":
+        return _download_direct_url(url, outdir, filename_base, progress_file)
 
     def hook(d):
         try:
