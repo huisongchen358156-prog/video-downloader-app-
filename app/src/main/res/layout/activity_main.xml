@@ -33,6 +33,14 @@
         android:layout_marginTop="8dp"
         android:text="解析" />
 
+    <Switch
+        android:id="@+id/direct_switch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:checked="true"
+        android:text="直连下载（绕过 VPN，下国内视频）" />
+
     <TextView
         android:id="@+id/platform_label"
         android:layout_width="match_parent"
