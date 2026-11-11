@@ -8,7 +8,9 @@
 设计说明：
 - 解析与下载都在本机进行，不经过任何中转服务器；链接只发给视频网站本身。
 - V1 不做 Cookie 导入、不做 JS Hook：需要登录/风控的链接会返回明确的错误码，
-  Kotlin 侧再翻译成中文提示。
+  Kotlin 侧再翻译成中文提示。例外：抖音链接报“需要登录”时，会改走
+  iesdouyin 的公开接口（iteminfo）直接取无水印播放地址再试一次，全程
+  不用 Cookie、不登录；个别受限视频仍可能下不了。
 - 清晰度只提供“合并格式”（视频+音频一体，可直接下载）和“仅音频”：
   1080p 等分离音视频需要 ffmpeg 合并，手机上没有现成的 ffmpeg，
   所以这类格式不在列表里，见 extract_info 返回的 has_higher_separate。
@@ -18,8 +20,157 @@
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 
 import yt_dlp
+
+# 抖音免登录直连用的公开接口（只用标准库 urllib，不新增依赖）。
+DOUYIN_MOBILE_UA = (
+    "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+)
+DOUYIN_ITEMINFO_URL = "https://www.iesdouyin.com/web/api/v2/aweme/iteminfo/?item_ids={}"
+DOUYIN_DIRECT_FORMAT_ID = "douyin_direct"
+
+
+def _is_douyin_url(url):
+    lower = (url or "").lower()
+    return "douyin.com" in lower or "iesdouyin.com" in lower
+
+
+def _http_get_json(url, timeout=15):
+    headers = {
+        "User-Agent": DOUYIN_MOBILE_UA,
+        "Referer": "https://www.iesdouyin.com/",
+    }
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def _douyin_video_id(url):
+    m = re.search(r"(?:video/|modal_id=|aweme_id=)(\d+)", url or "")
+    return m.group(1) if m else None
+
+
+def _douyin_resolve_id(url):
+    vid = _douyin_video_id(url)
+    if vid:
+        return vid
+    # 短链（v.douyin.com/xxx）：跟随跳转到最终地址再取 id。
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": DOUYIN_MOBILE_UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return _douyin_video_id(resp.geturl())
+    except Exception:
+        return None
+
+
+def _douyin_parse_iteminfo(data):
+    """把 iteminfo 返回的 JSON 解析成直连信息；失败返回 None。
+
+    播放地址默认是带水印的 playwm，把它换成 play 就是无水印地址。
+    """
+    try:
+        items = data.get("aweme_list") or []
+        if not items:
+            return None
+        a = items[0]
+        video = a.get("video") or {}
+        play = video.get("play_addr") or {}
+        urls = play.get("url_list") or []
+        if not urls:
+            return None
+        duration_ms = video.get("duration") or 0
+        cover = (video.get("cover") or {}).get("url_list") or []
+        return {
+            "title": a.get("desc") or "未命名视频",
+            "uploader": (a.get("author") or {}).get("nickname") or "",
+            "duration": (duration_ms // 1000) if duration_ms else None,
+            "thumbnail": cover[0] if cover else "",
+            "play_url": urls[0].replace("playwm", "play"),
+            "height": video.get("height") or 0,
+        }
+    except Exception:
+        return None
+
+
+def _douyin_direct_info(url):
+    """抖音免登录直连：走公开接口取无水印直链，不用 Cookie。
+    成功返回解析好的 dict（含 play_url），失败返回 None。"""
+    vid = _douyin_resolve_id(url)
+    if not vid:
+        return None
+    try:
+        data = _http_get_json(DOUYIN_ITEMINFO_URL.format(vid))
+    except Exception:
+        return None
+    return _douyin_parse_iteminfo(data)
+
+
+def _douyin_direct_payload(direct):
+    return {
+        "title": direct["title"],
+        "uploader": direct["uploader"],
+        "duration": direct["duration"],
+        "thumbnail": direct["thumbnail"],
+        "formats": [{
+            "format_id": DOUYIN_DIRECT_FORMAT_ID,
+            "height": direct["height"],
+            "ext": "mp4",
+            "filesize": None,
+            "is_audio_only": False,
+            "is_combined": True,
+        }],
+        "max_combined_height": direct["height"],
+        "has_higher_separate": False,
+    }
+
+
+def _download_douyin_direct(url, outdir, filename_base, progress_file):
+    """免登录直连下载：重新解析一次取无水印直链，再分段下载。"""
+    safe_base = re.sub(r'[\\/:*?"<>|]', "_", filename_base or "video").strip(" .") or "video"
+    direct = _douyin_direct_info(url)
+    if direct is None:
+        return _fail("login required: douyin direct api failed")
+    play_url = direct["play_url"]
+    target = os.path.join(outdir, safe_base + ".mp4")
+    headers = {
+        "User-Agent": DOUYIN_MOBILE_UA,
+        "Referer": "https://www.iesdouyin.com/",
+    }
+    try:
+        req = urllib.request.Request(play_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as fh:
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = resp.read(1024 * 256)
+                if not chunk:
+                    break
+                fh.write(chunk)
+                done += len(chunk)
+                try:
+                    payload = {"status": "downloading",
+                               "percent": int(done * 100 / total) if total else 0,
+                               "downloaded": done, "total": total}
+                    with open(progress_file, "w", encoding="utf-8") as pf:
+                        json.dump(payload, pf)
+                except Exception:
+                    pass
+        with open(progress_file, "w", encoding="utf-8") as pf:
+            json.dump({"status": "finished", "percent": 100}, pf)
+    except Exception as e:  # noqa: BLE001
+        try:
+            if os.path.exists(target):
+                os.remove(target)
+        except Exception:
+            pass
+        return _fail(str(e))
+    if not os.path.exists(target) or os.path.getsize(target) == 0:
+        return _fail("download finished but file not found")
+    return _ok({"path": target, "size": os.path.getsize(target)})
 
 
 def _error_code(message):
@@ -148,6 +299,11 @@ def extract_info(url):
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except Exception as e:  # noqa: BLE001 - 任何解析失败都转成错误 JSON
+        # 抖音链接报“需要登录”时，改走免登录直连接口再试一次（不用 Cookie）。
+        if _error_code(str(e)) == "login_required" and _is_douyin_url(url):
+            direct = _douyin_direct_info(url)
+            if direct is not None:
+                return _ok(_douyin_direct_payload(direct))
         return _fail(str(e))
 
     if not info or info.get("entries"):
@@ -171,6 +327,10 @@ def extract_info(url):
 def download(url, format_id, outdir, filename_base, progress_file):
     """下载指定格式。进度写进 progress_file（JSON），Kotlin 侧轮询读取。"""
     os.makedirs(outdir, exist_ok=True)
+
+    # 抖音免登录直连格式：不走 yt-dlp，直接下无水印直链。
+    if format_id == DOUYIN_DIRECT_FORMAT_ID:
+        return _download_douyin_direct(url, outdir, filename_base, progress_file)
 
     def hook(d):
         try:
