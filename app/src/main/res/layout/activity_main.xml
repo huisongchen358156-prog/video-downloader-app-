@@ -33,6 +33,13 @@
         android:layout_marginTop="8dp"
         android:text="解析" />
 
+    <Button
+        android:id="@+id/browser_button"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="浏览器打开（免登录）" />
+
     <Switch
         android:id="@+id/direct_switch"
         android:layout_width="match_parent"
