@@ -21,6 +21,7 @@ import json
 import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import yt_dlp
@@ -173,45 +174,146 @@ def _download_douyin_direct(url, outdir, filename_base, progress_file):
     return _ok({"path": target, "size": os.path.getsize(target)})
 
 
-def _download_direct_url(url, outdir, filename_base, progress_file):
+def _write_progress(progress_file, payload):
+    try:
+        with open(progress_file, "w", encoding="utf-8") as pf:
+            json.dump(payload, pf)
+    except Exception:
+        pass
+
+
+def _fetch_text(url, headers):
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read().decode("utf-8", errors="replace"), resp.geturl()
+
+
+def _download_hls(playlist_url, outdir, safe_base, progress_file, headers):
+    """HLS（.m3u8）下载：拉播放列表，逐段下载分片并拼成一个 .ts 文件。
+
+    以前浏览器模式嗅到 .m3u8 时，是把播放列表的文本当视频存成 .mp4，
+    界面显示下载完成、其实根本不是视频（用户 2026-11-12 反馈）。
+    这里真正逐段下。加密的 HLS（AES-128）暂不支持，明确报失败，
+    不再假装下好了。
+    """
+    target = os.path.join(outdir, safe_base + ".ts")
+    try:
+        text, final_url = _fetch_text(playlist_url, headers)
+        if "#EXT-X-STREAM-INF" in text:
+            # 主播放列表：选码率最高的一路子列表。
+            best_bandwidth = -1
+            best_variant = None
+            lines = [ln.strip() for ln in text.splitlines()]
+            for i, ln in enumerate(lines):
+                if ln.startswith("#EXT-X-STREAM-INF"):
+                    m = re.search(r"BANDWIDTH=(\d+)", ln)
+                    bandwidth = int(m.group(1)) if m else 0
+                    for nxt in lines[i + 1:]:
+                        if nxt and not nxt.startswith("#"):
+                            if bandwidth > best_bandwidth:
+                                best_bandwidth = bandwidth
+                                best_variant = urllib.parse.urljoin(final_url, nxt)
+                            break
+            if best_variant is None:
+                return _fail("HLS 主播放列表里没有可选的清晰度")
+            text, final_url = _fetch_text(best_variant, headers)
+        if "#EXT-X-KEY" in text and "METHOD=AES-128" in text:
+            return _fail("该视频是加密的 HLS 流，暂时下不了")
+        segments = []
+        init_uri = None
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if ln.startswith("#EXT-X-MAP:"):
+                m = re.search(r'URI="([^"]+)"', ln)
+                if m:
+                    init_uri = urllib.parse.urljoin(final_url, m.group(1))
+            elif ln and not ln.startswith("#"):
+                segments.append(urllib.parse.urljoin(final_url, ln))
+        if init_uri:
+            segments.insert(0, init_uri)
+        if not segments:
+            return _fail("HLS 播放列表里没有视频分片")
+        done_bytes = 0
+        with open(target, "wb") as fh:
+            for idx, seg_url in enumerate(segments):
+                req = urllib.request.Request(seg_url, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    while True:
+                        chunk = resp.read(1024 * 256)
+                        if not chunk:
+                            break
+                        fh.write(chunk)
+                        done_bytes += len(chunk)
+                _write_progress(progress_file, {
+                    "status": "downloading",
+                    "percent": int((idx + 1) * 100 / len(segments)),
+                    "downloaded": done_bytes, "total": 0})
+        _write_progress(progress_file, {"status": "finished", "percent": 100})
+    except Exception as e:  # noqa: BLE001
+        try:
+            if os.path.exists(target):
+                os.remove(target)
+        except Exception:
+            pass
+        return _fail(str(e))
+    if not os.path.exists(target) or os.path.getsize(target) == 0:
+        return _fail("download finished but file not found")
+    return _ok({"path": target, "size": os.path.getsize(target)})
+
+
+def _download_direct_url(url, outdir, filename_base, progress_file, headers=None):
     """浏览器模式嗅探到的直链下载：直接分段下载给定的媒体地址。
 
-    抖音的地址如带 playwm（水印版）就换成 play（无水印版），与直连解析一致；
-    抖音 CDN 有时会验 Referer，这里按地址归属带上。
+    抖音的地址如带 playwm（水印版）就换成 play（无水印版），与直连解析一致。
+    headers 是浏览器那边带过来的会话信息（Cookie / UA / 来源页），
+    嗅探到的地址常常要靠它们才下得动；没有时按平台补默认值。
+    地址是 .m3u8 播放列表时改走 HLS 逐段下载，不能把列表文本当视频存。
     """
     safe_base = re.sub(r'[\\/:*?"<>|]', "_", filename_base or "video").strip(" .") or "video"
     media_url = url.replace("playwm", "play") if "playwm" in (url or "") else url
-    ext = ".mp4"
     lower = (media_url or "").lower()
+    headers = headers or {}
+    req_headers = {"User-Agent": headers.get("ua") or DOUYIN_MOBILE_UA}
+    referer = headers.get("referer") or ""
+    if not referer and any(h in lower for h in ("douyin", "snssdk.com", "douyinvod.com")):
+        referer = "https://www.iesdouyin.com/"
+    if referer:
+        req_headers["Referer"] = referer
+    if headers.get("cookie"):
+        req_headers["Cookie"] = headers["cookie"]
+    if ".m3u8" in lower:
+        return _download_hls(media_url, outdir, safe_base, progress_file, req_headers)
+    ext = ".mp4"
     for candidate in (".mp4", ".webm", ".mov", ".mkv", ".m4a", ".mp3"):
         if candidate in lower:
             ext = candidate
             break
     target = os.path.join(outdir, safe_base + ext)
-    headers = {"User-Agent": DOUYIN_MOBILE_UA}
-    if any(h in lower for h in ("douyin", "snssdk.com", "douyinvod.com")):
-        headers["Referer"] = "https://www.iesdouyin.com/"
     try:
-        req = urllib.request.Request(media_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=60) as resp, open(target, "wb") as fh:
+        req = urllib.request.Request(media_url, headers=req_headers)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            final_url = resp.geturl()
+            first = resp.read(1024 * 256)
+            if first.startswith(b"#EXTM3U"):
+                # 地址里没写 .m3u8、内容却是播放列表：改走 HLS 下载。
+                return _download_hls(final_url, outdir, safe_base,
+                                     progress_file, req_headers)
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
-            while True:
-                chunk = resp.read(1024 * 256)
-                if not chunk:
-                    break
-                fh.write(chunk)
-                done += len(chunk)
-                try:
-                    payload = {"status": "downloading",
-                               "percent": int(done * 100 / total) if total else 0,
-                               "downloaded": done, "total": total}
-                    with open(progress_file, "w", encoding="utf-8") as pf:
-                        json.dump(payload, pf)
-                except Exception:
-                    pass
-        with open(progress_file, "w", encoding="utf-8") as pf:
-            json.dump({"status": "finished", "percent": 100}, pf)
+            with open(target, "wb") as fh:
+                fh.write(first)
+                done += len(first)
+                while True:
+                    chunk = resp.read(1024 * 256)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    done += len(chunk)
+                    _write_progress(progress_file, {
+                        "status": "downloading",
+                        "percent": int(done * 100 / total) if total else 0,
+                        "downloaded": done, "total": total})
+        _write_progress(progress_file, {"status": "finished", "percent": 100})
     except Exception as e:  # noqa: BLE001
         try:
             if os.path.exists(target):
@@ -375,8 +477,12 @@ def extract_info(url):
     })
 
 
-def download(url, format_id, outdir, filename_base, progress_file):
-    """下载指定格式。进度写进 progress_file（JSON），Kotlin 侧轮询读取。"""
+def download(url, format_id, outdir, filename_base, progress_file, headers_json=""):
+    """下载指定格式。进度写进 progress_file（JSON），Kotlin 侧轮询读取。
+
+    headers_json 只给浏览器模式用：浏览器嗅探到地址时把当时的
+    Cookie / UA / 来源页一起带过来（JSON 字符串），下载时原样带上。
+    """
     os.makedirs(outdir, exist_ok=True)
 
     # 抖音免登录直连格式：不走 yt-dlp，直接下无水印直链。
@@ -385,7 +491,12 @@ def download(url, format_id, outdir, filename_base, progress_file):
 
     # 浏览器模式嗅探到的直链：url 本身就是媒体地址，直接下载。
     if format_id == "direct_url":
-        return _download_direct_url(url, outdir, filename_base, progress_file)
+        headers = {}
+        try:
+            headers = json.loads(headers_json) if headers_json else {}
+        except Exception:
+            headers = {}
+        return _download_direct_url(url, outdir, filename_base, progress_file, headers)
 
     def hook(d):
         try:
