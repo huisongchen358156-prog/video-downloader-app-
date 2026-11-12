@@ -5,6 +5,7 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -36,6 +37,9 @@ class BrowserActivity : Activity() {
     private val detectedUrls = mutableListOf<String>()
     private val detectedSizes = mutableMapOf<String, Long?>()
     private var dialogShown = false
+    // 已经把哪个视频的 App 打开链接换成网页版了：同一个视频只换一次，
+    // 之后再跳 App 只拦住、不重载页面（V1.5 是每次都重载，页面无限刷新、一直闪）。
+    private var convertedVideoId: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -81,17 +85,13 @@ class BrowserActivity : Activity() {
 
             // 抖音分享页会跳 snssdk1128://aweme/detail/{id} 这种“在 App 里打开”的链接，
             // WebView 打不开这种 scheme，页面会直接死掉（net::ERR_UNKNOWN_URL_SCHEME），
-            // 视频还没嗅到就没了。拦住它：带视频 id 的换成网页版打开，其他的直接吞掉。
+            // 视频还没嗅到就没了。处理方式见 handleAppNavigation：只换一次，之后只拦不重载。
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean {
                 val url = request?.url?.toString() ?: return false
-                val webUrl = appLinkToWebUrl(url)
-                if (webUrl != null) {
-                    view?.loadUrl(webUrl)
-                    return true
-                }
+                if (appLinkToWebUrl(url) != null) return handleAppNavigation(url)
                 val scheme = request.url?.scheme?.lowercase()
                 if (scheme != "http" && scheme != "https") return true
                 return false
@@ -100,11 +100,7 @@ class BrowserActivity : Activity() {
             @Deprecated("Deprecated in Java")
             override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
                 val u = url ?: return false
-                val webUrl = appLinkToWebUrl(u)
-                if (webUrl != null) {
-                    view?.loadUrl(webUrl)
-                    return true
-                }
+                if (appLinkToWebUrl(u) != null) return handleAppNavigation(u)
                 val scheme = try {
                     URL(u).protocol.lowercase()
                 } catch (e: Exception) {
@@ -115,7 +111,7 @@ class BrowserActivity : Activity() {
             }
 
             // 兜底：万一有跳转没拦住、已经报了不支持的 scheme，
-            // 是抖音 App 链接就换成网页版重载一次。
+            // 是抖音 App 链接且还没换过，就换成网页版重载一次；换过的不再重载。
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
@@ -124,25 +120,51 @@ class BrowserActivity : Activity() {
                 if (request?.isForMainFrame != true) return
                 if (error?.errorCode != ERROR_UNSUPPORTED_SCHEME) return
                 val url = request.url?.toString() ?: return
-                val webUrl = appLinkToWebUrl(url) ?: return
-                view?.loadUrl(webUrl)
+                if (appLinkToWebUrl(url) != null) handleAppNavigation(url)
             }
         }
         downloadButton.setOnClickListener { showDetectedDialog() }
         findViewById<Button>(R.id.browser_close_button).setOnClickListener { finish() }
 
-        // 粘贴的链接本身也可能是 App 打开链接，先换成网页版再加载。
-        webView.loadUrl(appLinkToWebUrl(pageUrl) ?: pageUrl)
+        // 粘贴的链接本身也可能是 App 打开链接，先换成网页版再加载，并记下已换过。
+        val initialWebUrl = appLinkToWebUrl(pageUrl)
+        if (initialWebUrl != null) {
+            convertedVideoId = extractAwemeId(pageUrl)
+            webView.loadUrl(initialWebUrl)
+        } else {
+            webView.loadUrl(pageUrl)
+        }
+    }
+
+    // 处理一次跳 App 的导航，返回 true 表示已拦下（不让 WebView 自己加载）：
+    // 第一次遇到某个视频的 App 链接时换成网页版打开；之后同一视频再跳，
+    // 或者当前页已经是这个视频的网页版了，就只拦住、不再重载页面——
+    // 否则“跳 App → 换网页版 → 又跳 App”会无限循环，页面一直闪（V1.5 的毛病）。
+    private fun handleAppNavigation(url: String): Boolean {
+        val webUrl = appLinkToWebUrl(url) ?: return false
+        val id = extractAwemeId(url)
+        val currentUrl = webView.url ?: ""
+        if (id != null && (convertedVideoId == id || currentUrl.contains("/video/$id"))) {
+            convertedVideoId = id
+            return true
+        }
+        convertedVideoId = id
+        webView.loadUrl(webUrl)
+        return true
+    }
+
+    private fun extractAwemeId(url: String): String? {
+        return Regex("aweme/detail/(\\d+)").find(url)?.groupValues?.get(1)
     }
 
     // 把抖音 App 的打开链接换成网页版：
-    // snssdk1128://aweme/detail/769121888333142479?... -> https://www.iesdouyin.com/share/video/769121888333142479/
+    // snssdk1128://aweme/detail/7691218878333142479?... -> https://www.douyin.com/video/7691218878333142479/
     // 不是 App 链接（http/https 或其他）返回 null。
     private fun appLinkToWebUrl(url: String): String? {
         val lower = url.lowercase()
         if (lower.startsWith("http://") || lower.startsWith("https://")) return null
-        val match = Regex("aweme/detail/(\\d+)").find(url) ?: return null
-        return "https://www.iesdouyin.com/share/video/${match.groupValues[1]}/"
+        val id = extractAwemeId(url) ?: return null
+        return "https://www.douyin.com/video/$id/"
     }
 
     // 判断一个请求地址是不是视频文件：带视频后缀，或抖音播放地址。
@@ -227,7 +249,17 @@ class BrowserActivity : Activity() {
     private fun startDetectedDownload(mediaUrl: String) {
         val fileName = sanitizeFilename(pageTitle)
         val platform = detectPlatform(pageUrl).label
-        DownloadService.startDownload(this, mediaUrl, "direct_url", fileName, platform)
+        // 把浏览器当前会话带给下载：嗅探到的地址常常要靠当时的 Cookie、
+        // 浏览器 UA 和来源页才下得动，只用默认请求头会被 CDN 拒绝。
+        val cookieManager = CookieManager.getInstance()
+        val cookie = cookieManager.getCookie(mediaUrl)
+            ?: cookieManager.getCookie(pageUrl)
+            ?: ""
+        val ua = webView.settings.userAgentString ?: ""
+        DownloadService.startDownload(
+            this, mediaUrl, "direct_url", fileName, platform,
+            cookie = cookie, ua = ua, referer = pageUrl
+        )
         Toast.makeText(this, "已开始下载，进度看通知栏", Toast.LENGTH_SHORT).show()
         finish()
     }

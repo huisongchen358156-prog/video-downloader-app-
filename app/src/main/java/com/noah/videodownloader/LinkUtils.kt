@@ -67,6 +67,7 @@ fun detectPlatform(url: String): Platform {
 fun mimeOfFile(name: String): String {
     return when (name.substringAfterLast('.', "").lowercase()) {
         "mp4" -> "video/mp4"
+        "ts" -> "video/mp2t"
         "webm" -> "video/webm"
         "mkv" -> "video/x-matroska"
         "mov" -> "video/quicktime"

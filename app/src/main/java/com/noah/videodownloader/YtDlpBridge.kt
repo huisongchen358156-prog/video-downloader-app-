@@ -103,11 +103,12 @@ object YtDlpBridge {
         formatId: String,
         outdir: String,
         filenameBase: String,
-        progressFile: String
+        progressFile: String,
+        headersJson: String = ""
     ): DownloadResult {
         return try {
             val jsonStr = module().callAttr(
-                "download", url, formatId, outdir, filenameBase, progressFile
+                "download", url, formatId, outdir, filenameBase, progressFile, headersJson
             ).toString()
             val json = JSONObject(jsonStr)
             if (!json.optBoolean("ok", false)) {

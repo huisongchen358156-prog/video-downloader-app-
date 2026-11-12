@@ -39,6 +39,10 @@ class DownloadService : Service() {
         const val EXTRA_FORMAT_ID = "format_id"
         const val EXTRA_FILE_NAME = "file_name"
         const val EXTRA_PLATFORM = "platform"
+        // 浏览器模式专用：嗅探到地址时浏览器里的会话信息，下载时原样带上。
+        const val EXTRA_COOKIE = "cookie"
+        const val EXTRA_UA = "ua"
+        const val EXTRA_REFERER = "referer"
 
         private const val CHANNEL_ID = "download"
         private const val NOTIF_ID = 1001
@@ -48,13 +52,19 @@ class DownloadService : Service() {
             url: String,
             formatId: String,
             fileName: String,
-            platform: String
+            platform: String,
+            cookie: String = "",
+            ua: String = "",
+            referer: String = ""
         ) {
             val intent = Intent(context, DownloadService::class.java).apply {
                 putExtra(EXTRA_URL, url)
                 putExtra(EXTRA_FORMAT_ID, formatId)
                 putExtra(EXTRA_FILE_NAME, fileName)
                 putExtra(EXTRA_PLATFORM, platform)
+                putExtra(EXTRA_COOKIE, cookie)
+                putExtra(EXTRA_UA, ua)
+                putExtra(EXTRA_REFERER, referer)
             }
             context.startForegroundService(intent)
         }
@@ -107,19 +117,30 @@ class DownloadService : Service() {
         val formatId = intent.getStringExtra(EXTRA_FORMAT_ID) ?: return START_NOT_STICKY
         val fileName = intent.getStringExtra(EXTRA_FILE_NAME) ?: "video"
         val platform = intent.getStringExtra(EXTRA_PLATFORM) ?: Platform.OTHER.label
+        val cookie = intent.getStringExtra(EXTRA_COOKIE) ?: ""
+        val ua = intent.getStringExtra(EXTRA_UA) ?: ""
+        val referer = intent.getStringExtra(EXTRA_REFERER) ?: ""
         running = true
 
         startForeground(NOTIF_ID, progressNotification(fileName, 0))
 
         Thread {
-            runDownload(url, formatId, fileName, platform)
+            runDownload(url, formatId, fileName, platform, cookie, ua, referer)
             running = false
             stopSelf()
         }.start()
         return START_NOT_STICKY
     }
 
-    private fun runDownload(url: String, formatId: String, fileName: String, platform: String) {
+    private fun runDownload(
+        url: String,
+        formatId: String,
+        fileName: String,
+        platform: String,
+        cookie: String = "",
+        ua: String = "",
+        referer: String = ""
+    ) {
         // 直连开着时，下载线程里也确保绑到直连网络（解析时绑过的话这里直接返回）。
         if (DirectNetwork.isEnabled(this)) {
             DirectNetwork.ensureBound(applicationContext)
@@ -129,10 +150,20 @@ class DownloadService : Service() {
         val progressFile = File(cacheDir, "dl_progress.json")
         if (progressFile.exists()) progressFile.delete()
 
+        // 浏览器模式的会话信息打包成 JSON 给 Python（普通解析下载没有这三样，传空对象）。
+        val headersJson = JSONObject().apply {
+            if (cookie.isNotEmpty()) put("cookie", cookie)
+            if (ua.isNotEmpty()) put("ua", ua)
+            if (referer.isNotEmpty()) put("referer", referer)
+        }.toString()
+
         // 下载线程 + 轮询线程：Python 把进度写进 progressFile，这里每 400ms 读一次。
         var result: DownloadResult? = null
         val dlThread = Thread {
-            result = YtDlpBridge.download(url, formatId, tmpDir.absolutePath, fileName, progressFile.absolutePath)
+            result = YtDlpBridge.download(
+                url, formatId, tmpDir.absolutePath, fileName,
+                progressFile.absolutePath, headersJson
+            )
         }
         dlThread.start()
         var lastPercent = -1
