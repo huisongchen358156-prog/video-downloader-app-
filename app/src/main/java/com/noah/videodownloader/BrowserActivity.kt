@@ -17,6 +17,8 @@ import android.widget.TextView
 import android.widget.Toast
 import java.net.HttpURLConnection
 import java.net.URL
+import org.json.JSONArray
+import org.json.JSONTokener
 
 // 浏览器模式：像原版视频下载鸟那样，在内置浏览器里打开链接、播放视频，
 // 嗅探页面加载的视频文件地址，点下载即可，全程不用登录。
@@ -27,6 +29,48 @@ class BrowserActivity : Activity() {
 
     companion object {
         const val EXTRA_URL = "url"
+
+        // 正经 Chrome 的 UA，没有 wv 标记：WebView、大小探测、下载透传共用同一个，
+        // 整条链在抖音那边看到的都是同一个“浏览器”。
+        const val CHROME_MOBILE_UA =
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
+                "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+
+        // 在页面里跑的嗅探脚本：收集 video 元素的地址，再把整页内容里的
+        // 转义符还原后正则扫出视频地址，最后返回一个 JSON 数组字符串。
+        const val EXTRACT_SCRIPT = """
+(function() {
+  var urls = [];
+  var seen = {};
+  function add(u) {
+    if (!u) return;
+    u = u.replace(/&amp;/g, "&");
+    if (seen[u]) return;
+    seen[u] = 1;
+    urls.push(u);
+  }
+  var vids = document.querySelectorAll("video");
+  for (var i = 0; i < vids.length; i++) {
+    add(vids[i].currentSrc);
+    add(vids[i].src);
+  }
+  var html = document.documentElement.innerHTML
+    .replace(/\\u002F/g, "/")
+    .replace(/\\\//g, "/");
+  var re = /https?:\/\/[^\s"'<>\\]+/g;
+  var m;
+  while ((m = re.exec(html)) !== null) {
+    var u = m[0];
+    if (u.indexOf("douyinvod.com") >= 0 ||
+        u.indexOf("aweme/v1/play") >= 0 ||
+        u.indexOf(".mp4") >= 0 ||
+        u.indexOf(".m3u8") >= 0) {
+      add(u);
+    }
+  }
+  return JSON.stringify(urls);
+})()
+"""
     }
 
     private lateinit var webView: WebView
@@ -63,6 +107,16 @@ class BrowserActivity : Activity() {
         settings.domStorageEnabled = true
         settings.mediaPlaybackRequiresUserGesture = false
         settings.allowFileAccess = false
+        // 关键一步（V1.7）：UA 换成正经 Chrome 的。WebView 默认 UA 带 wv 标记，
+        // 抖音一眼认出是 App 内嵌浏览器，就只给“请尝试在抖音内观看”的错误页、
+        // 根本不播（V1.6 真机截图确认）。原版下载鸟能在内置浏览器里播，
+        // 靠的也是不暴露 WebView 身份。
+        settings.userAgentString = CHROME_MOBILE_UA
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+        // 抖音的视频信息接口会种第三方 Cookie，不接受的话页面数据拿不全。
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onReceivedTitle(view: WebView?, title: String?) {
@@ -121,6 +175,14 @@ class BrowserActivity : Activity() {
                 if (error?.errorCode != ERROR_UNSUPPORTED_SCHEME) return
                 val url = request.url?.toString() ?: return
                 if (appLinkToWebUrl(url) != null) handleAppNavigation(url)
+            }
+
+            // 页面加载完扫一遍页面内容（见 scanPageForVideos）：抖音页面的数据里
+            // 直接带着播放地址，就算视频没自动播起来，也能先把地址嗅出来；
+            // 页面数据是异步加载的，隔几秒再扫一遍补漏。
+            override fun onPageFinished(view: WebView?, url: String?) {
+                scanPageForVideos()
+                webView.postDelayed({ scanPageForVideos() }, 4000)
             }
         }
         downloadButton.setOnClickListener { showDetectedDialog() }
@@ -204,6 +266,35 @@ class BrowserActivity : Activity() {
         }.start()
     }
 
+    // 在页面里跑 EXTRACT_SCRIPT，把结果交给 handleExtractedUrls。
+    // 拦截请求那条路还在，这条是兜底：视频没播起来时也能从页面数据里捞地址。
+    private fun scanPageForVideos() {
+        try {
+            webView.evaluateJavascript(EXTRACT_SCRIPT) { result ->
+                handleExtractedUrls(result)
+            }
+        } catch (e: Exception) {
+            // 页面还没准备好时扫不到就算了，不影响页面本身
+        }
+    }
+
+    // evaluateJavascript 的返回值是 JSON 编码过的字符串，先解开一层再按数组解析。
+    private fun handleExtractedUrls(result: String?) {
+        if (result.isNullOrBlank() || result == "null") return
+        try {
+            val decoded = JSONTokener(result).nextValue() as? String ?: return
+            val array = JSONArray(decoded)
+            for (i in 0 until array.length()) {
+                val url = array.optString(i)
+                if (url.isNotBlank() && isVideoUrl(url)) {
+                    onVideoDetected(url)
+                }
+            }
+        } catch (e: Exception) {
+            // 解析不出来就算了，不影响页面本身
+        }
+    }
+
     private fun fetchContentLength(url: String): Long? {
         return try {
             val conn = URL(url).openConnection() as HttpURLConnection
@@ -211,11 +302,7 @@ class BrowserActivity : Activity() {
             conn.instanceFollowRedirects = true
             conn.connectTimeout = 8000
             conn.readTimeout = 8000
-            conn.setRequestProperty(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-            )
+            conn.setRequestProperty("User-Agent", CHROME_MOBILE_UA)
             conn.setRequestProperty("Referer", pageUrl)
             conn.connect()
             val len = conn.contentLengthLong
